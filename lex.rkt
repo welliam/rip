@@ -10,6 +10,23 @@
    keyword
    operator))
 
+(define escape-characters
+  #hash((#\n . #\newline)))
+
+(define (escape-string s)
+  (list->string
+   (let loop ((i 0))
+     (cond
+       ((= i (string-length s)) '())
+       ((char=? (string-ref s i) #\\)
+        (define c (string-ref s (+ i 1)))
+        (cons (hash-ref escape-characters c c)
+              (loop (+ i 2))))
+       (else (cons (string-ref s i) (loop (+ i 1))))))))
+
+(define (escape-token-string s)
+  (token-string (escape-string s)))
+
 (define lex-python
   (lexer
    ((:or "del" "from" "while" "as" "elif"
@@ -32,29 +49,32 @@
     (token-operator lexeme))
 
    ; whitespace
-   ;; ((:: #\newline
-   ;;      (complement (:: whitespace #\newline whitespace))
-   ;;      #\newline)
-   ;;  (lex-python input-port))
-   ((:+ (:- whitespace #\newline))
+   ((:+ (:- whitespace #\newline))      ; non-semantic
     (lex-python input-port))
-   ((:: #\newline (:* (:- whitespace #\newline)))
+   ((:: #\newline (:* (:- whitespace #\newline))) ; semantic
     (token-leading-spaces (- (string-length lexeme) 1)))
 
+   ; comments
    ((:: #\# (complement (:: any-string #\newline any-string)))
     (lex-python input-port))
+
+   ; symbols
    ((:: (:or alphabetic #\_) (:* (:or alphabetic numeric #\_)))
     (token-symbol (string->symbol lexeme)))
+
+   ; number
    ((:: (:* numeric) (:? #\.) (:+ numeric))
     (token-number (string->number lexeme)))
 
    ; strings
    ((:: "\"\"\"" (complement (:: any-string "\"\"\"" any-string)) "\"\"\"")
     (token-string (substring lexeme 3 (- (string-length lexeme) 3))))
-   ((:: #\" (complement (:: any-string "\"" any-string)) #\")
-    (token-string (substring lexeme 1 (- (string-length lexeme) 1))))
-   ((:: #\' (complement (:: any-string "\'" any-string)) #\')
-    (token-string (substring lexeme 1 (- (string-length lexeme) 1))))))
+   ((:: "\'\'\'" (complement (:: any-string "\'\'\'" any-string)) "\'\'\'")
+    (token-string (substring lexeme 3 (- (string-length lexeme) 3))))
+   ((:: #\" (complement (:: any-string (:~ #\\) #\" any-string)) #\")
+    (escape-token-string (substring lexeme 1 (- (string-length lexeme) 1))))
+   ((:: #\' (complement (:: any-string (:~ #\\) #\' any-string)) #\')
+    (escape-token-string (substring lexeme 1 (- (string-length lexeme) 1))))))
 
 (define (port->python-tokens (p (current-input-port)))
   (define token (lex-python p))
@@ -104,6 +124,20 @@
   (check-equal? (string->python-tokens "50")
                 (list (token-number 50)))
 
+  ; strings
+  (check-equal? (string->python-tokens "\"hello\"")
+                (list (token-string "hello")))
+  (check-equal? (string->python-tokens "\"hello'world\"")
+                (list (token-string "hello'world")))
+  (check-equal? (string->python-tokens "'hello'")
+                (list (token-string "hello")))
+  (check-equal? (string->python-tokens "'hello\"world' 'hi'")
+                (list (token-string "hello\"world") (token-string "hi")))
+  (check-equal? (string->python-tokens "\"\\\"hello\\\"\"")
+                (list (token-string "\"hello\"")))
+  (check-equal? (string->python-tokens "'\\'hello\\''")
+                (list (token-string "'hello'")))
+
   ; sequences
   (check-equal? (string->python-tokens "1\n2")
                 (list (token-number 1)
@@ -121,5 +155,4 @@
                 (list (token-number 1)
                       (token-leading-spaces 0)
                       (token-leading-spaces 0)
-                      (token-number 2)))
-  )
+                      (token-number 2))))
