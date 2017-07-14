@@ -1,17 +1,105 @@
 #lang racket
 
+(provide python-tokens python-operators python-keywords python-aux-tokens lex-python)
+
 (require parser-tools/lex (prefix-in : parser-tools/lex-sre))
 
 (define-tokens python-tokens
-  (leading-spaces
-   number
-   symbol
-   string
-   keyword
-   operator))
+  (leading-spaces number symbol string))
+
+(define-empty-tokens python-aux-tokens
+  (eof))
+
+(define-empty-tokens python-operators
+  (+ - * / % ** // == != > < >= <= = += -= *= /= %= **= //= & vertical-bar ^ ~ <<
+   >> and or not and-not or-not in not-in is is-not dot
+   open-parenthesis close-parenthesis open-bracket close-bracket
+   open-curly close-curly comma :))
+
+(define-empty-tokens python-keywords
+  (del from while as elif global with assert else if pass yield break
+   except import print class exec raise continue finally return def for
+   lambda try))
 
 (define escape-characters
   #hash((#\n . #\newline)))
+
+(define operators
+  (make-hash
+   `(("+" . ,token-+)
+     ("-" . ,token--)
+     ("*" . ,token-*)
+     ("/" . ,token-/)
+     ("%" . ,token-%)
+     ("**" . ,token-**)
+     ("//" . ,token-//)
+     ("==" . ,token-==)
+     ("!=" . ,token-!=)
+     (">" . ,token->)
+     ("<" . ,token-<)
+     (">=" . ,token->=)
+     ("<=" . ,token-<=)
+     ("=" . ,token-=)
+     ("+=" . ,token-+=)
+     ("-=" . ,token--=)
+     ("*=" . ,token-*=)
+     ("/=" . ,token-/=)
+     ("%=" . ,token-%=)
+     ("**=" . ,token-**=)
+     ("//=" . ,token-//=)
+     ("&" . ,token-&)
+     ("|" . ,token-vertical-bar)
+     ("^" . ,token-^)
+     ("~" . ,token-~)
+     ("<<" . ,token-<<)
+     (">>" . ,token->>)
+     ("and" . ,token-and)
+     ("or" . ,token-or)
+     ("not" . ,token-not)
+     ("and not" . ,token-and-not)
+     ("or" . ,token-or)
+     ("in" . ,token-in)
+     ("not in" . ,token-not-in)
+     ("is" . ,token-is)
+     ("is not" . ,token-is-not)
+     (":" . ,token-:)
+     ("(" . ,token-open-parenthesis)
+     (")" . ,token-close-parenthesis)
+     ("[" . ,token-open-bracket)
+     ("]" . ,token-close-bracket)
+     ("{" . ,token-open-curly)
+     ("}" . ,token-close-curly)
+     ("," . ,token-comma)
+     ("." . ,token-dot))))
+
+(define keywords
+  (make-hash
+   `(("del" . ,token-del)
+     ("from" . ,token-from)
+     ("while" . ,token-while)
+     ("as" . ,token-as)
+     ("elif" . ,token-elif)
+     ("global" . ,token-global)
+     ("with" . ,token-with)
+     ("assert" . ,token-assert)
+     ("else" . ,token-else)
+     ("if" . ,token-if)
+     ("pass" . ,token-pass)
+     ("yield" . ,token-yield)
+     ("break" . ,token-break)
+     ("except" . ,token-except)
+     ("import" . ,token-import)
+     ("print" . ,token-print)
+     ("class" . ,token-class)
+     ("exec" . ,token-exec)
+     ("raise" . ,token-raise)
+     ("continue" . ,token-continue)
+     ("finally" . ,token-finally)
+     ("return" . ,token-return)
+     ("def" . ,token-def)
+     ("for" . ,token-for)
+     ("lambda" . ,token-lambda)
+     ("try" . ,token-try))))
 
 (define (escape-string s)
   (list->string
@@ -28,14 +116,15 @@
   (token-string (escape-string s)))
 
 (define lex-python
-  (lexer
+  (lexer-src-pos
+   ((eof) (token-eof))
    ((:or "del" "from" "while" "as" "elif"
          "global" "with" "assert" "else" "if"
          "pass" "yield" "break" "except" "import"
          "print" "class" "exec" "raise" "continue"
          "finally" "return" "def" "for" "lambda"
          "try")
-    (token-keyword (string->symbol lexeme)))
+    ((hash-ref keywords lexeme)))
    ((:or "+" "-" "*" "/"
          "%" "**" "//" "=="
          "!=" ">" "<" ">="
@@ -46,17 +135,17 @@
          "and not" "or not" "in" "not in"
          "is" "is not"
          "(" ")" "[" "]" "{" "}" "," ":" ".")
-    (token-operator lexeme))
+    ((hash-ref operators lexeme)))
 
    ; whitespace
    ((:+ (:- whitespace #\newline))      ; non-semantic
-    (lex-python input-port))
+    (return-without-pos (lex-python input-port)))
    ((:: #\newline (:* (:- whitespace #\newline))) ; semantic
     (token-leading-spaces (- (string-length lexeme) 1)))
 
    ; comments
    ((:: #\# (complement (:: any-string #\newline any-string)))
-    (lex-python input-port))
+    (return-without-pos (lex-python input-port)))
 
    ; symbols
    ((:: (:or alphabetic #\_) (:* (:or alphabetic numeric #\_)))
@@ -78,85 +167,63 @@
 
 (define (port->python-tokens (p (current-input-port)))
   (define token (lex-python p))
-  (if (eq? token 'eof)
-      '(eof)
+  (if (eq? (position-token-token token) (token-eof))
+      (list token)
       (cons token (port->python-tokens p))))
 
-(define (string->python-tokens s) (with-input-from-string s port->python-tokens))
-
-(define (display-tokens (p (current-input-port)))
-  (define token (lex-python p))
-  (unless (eq? token 'eof)
-    (print token)
-    (newline)
-    (display-tokens p)))
+(define (string->python-tokens s)
+  (with-input-from-string s port->python-tokens))
 
 (module+ test
   (require rackunit)
 
+  (define-syntax-rule (check-lex? s tokens ...)
+    (check-equal? (map position-token-token (string->python-tokens s))
+                  (append (list tokens ...) (list (token-eof)))))
+
   ; symbols
-  (check-equal? (string->python-tokens "hello")
-                (list (token-symbol 'hello) 'eof))
-  (check-equal? (string->python-tokens "__hello__")
-                (list (token-symbol '__hello__) 'eof))
-  (check-equal? (string->python-tokens "_")
-                (list (token-symbol '_) 'eof))
-  (check-equal? (string->python-tokens "foo123")
-                (list (token-symbol 'foo123) 'eof))
-  (check-equal? (string->python-tokens "FooBar___12309123")
-                (list (token-symbol 'FooBar___12309123) 'eof))
-  (check-equal? (string->python-tokens "define")
-                (list (token-symbol 'define) 'eof))
+  (check-lex? "hello" (token-symbol 'hello))
+  (check-lex? "__hello__" (token-symbol '__hello__))
+  (check-lex? "_" (token-symbol '_))
+  (check-lex? "foo123" (token-symbol 'foo123))
+  (check-lex? "FooBar___12309123" (token-symbol 'FooBar___12309123))
+  (check-lex? "define" (token-symbol 'define))
 
   ; keywords
-  (check-equal? (string->python-tokens "def")
-                (list (token-keyword 'def) 'eof))
-  (check-equal? (string->python-tokens "break")
-                (list (token-keyword 'break) 'eof))
-  (check-equal? (string->python-tokens "class")
-                (list (token-keyword 'class) 'eof))
+  (check-lex? "def" (token-def))
+  (check-lex? "break" (token-break))
+  (check-lex? "class" (token-class))
 
   ; numbers
-  (check-equal? (string->python-tokens "2.5")
-                (list (token-number 2.5) 'eof))
-  (check-equal? (string->python-tokens ".5")
-                (list (token-number .5) 'eof))
-  (check-equal? (string->python-tokens "50")
-                (list (token-number 50) 'eof))
+  (check-lex? "2.5" (token-number 2.5))
+  (check-lex? ".5" (token-number .5))
+  (check-lex? "50" (token-number 50))
 
   ; strings
-  (check-equal? (string->python-tokens "\"hello\"")
-                (list (token-string "hello") 'eof))
-  (check-equal? (string->python-tokens "\"hello'world\"")
-                (list (token-string "hello'world") 'eof))
-  (check-equal? (string->python-tokens "'hello'")
-                (list (token-string "hello") 'eof))
-  (check-equal? (string->python-tokens "'hello\"world' 'hi'")
-                (list (token-string "hello\"world") (token-string "hi") 'eof))
-  (check-equal? (string->python-tokens "\"\\\"hello\\\"\"")
-                (list (token-string "\"hello\"") 'eof))
-  (check-equal? (string->python-tokens "'\\'hello\\''")
-                (list (token-string "'hello'") 'eof))
+  (check-lex? "\"hello\"" (token-string "hello"))
+  (check-lex? "\"hello'world\"" (token-string "hello'world"))
+  (check-lex? "'hello'" (token-string "hello"))
+  (check-lex? "'hello\"world' 'hi'"
+              (token-string "hello\"world")
+              (token-string "hi") )
+  (check-lex? "\"\\\"hello\\\"\"" (token-string "\"hello\""))
+  (check-lex? "'\\'hello\\''" (token-string "'hello'"))
 
   ; sequences
-  (check-equal? (string->python-tokens "1\n2")
-                (list (token-number 1)
-                      (token-leading-spaces 0)
-                      (token-number 2)
-                      'eof))
-  (check-equal? (string->python-tokens "1\n 2")
-                (list (token-number 1)
-                      (token-leading-spaces 1)
-                      (token-number 2)
-                      'eof))
-  (check-equal? (string->python-tokens "1\n     2")
-                (list (token-number 1)
-                      (token-leading-spaces 5)
-                      (token-number 2)
-                      'eof))
-  (check-equal? (string->python-tokens "1#hello\n#hello world\n2")
-                (list (token-number 1)
-                      (token-leading-spaces 0)
-                      (token-leading-spaces 0)
-                      (token-number 2)
-                      'eof)))
+  (check-lex? "1\n2"
+              (token-number 1)
+              (token-leading-spaces 0)
+              (token-number 2))
+  (check-lex? "1\n 2"
+              (token-number 1)
+              (token-leading-spaces 1)
+              (token-number 2))
+  (check-lex? "1\n     2"
+              (token-number 1)
+              (token-leading-spaces 5)
+              (token-number 2))
+  (check-lex? "1#hello\n#hello world\n2"
+              (token-number 1)
+              (token-leading-spaces 0)
+              (token-leading-spaces 0)
+              (token-number 2)))
