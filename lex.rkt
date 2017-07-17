@@ -2,13 +2,20 @@
 
 (provide python-tokens python-operators python-keywords python-aux-tokens lex-python)
 
-(require parser-tools/lex (prefix-in : parser-tools/lex-sre))
+(require parser-tools/lex
+         (prefix-in : parser-tools/lex-sre)
+         racket/generator)
+
+(define-syntax-rule (info xs ...) (begin (printf "~s: ~s\n" 'xs xs) ... (newline)))
+(define-syntax-rule (pr x) (begin (define it x) (write it) (newline) it))
+(define (sequence-take->list s i)
+  (for/list ((_ (in-range i)) (x s)) x))
 
 (define-tokens python-tokens
   (leading-spaces number symbol string))
 
 (define-empty-tokens python-aux-tokens
-  (eof))
+  (eof indent newline unindent))
 
 (define-empty-tokens python-operators
   (+ - * / % ** // == != > < >= <= = += -= *= /= %= **= //= & vertical-bar ^ ~ <<
@@ -115,7 +122,11 @@
 (define (escape-token-string s)
   (token-string (escape-string s)))
 
-(define lex-python
+(define (get-token-string s delimiters-len)
+  (escape-token-string
+   (substring s delimiters-len (- (string-length s) delimiters-len))))
+
+(define basic-lex-python
   (lexer-src-pos
    ((eof) (token-eof))
    ((:or "del" "from" "while" "as" "elif"
@@ -139,13 +150,13 @@
 
    ; whitespace
    ((:+ (:- whitespace #\newline))      ; non-semantic
-    (return-without-pos (lex-python input-port)))
+    (return-without-pos (basic-lex-python input-port)))
    ((:: #\newline (:* (:- whitespace #\newline))) ; semantic
     (token-leading-spaces (- (string-length lexeme) 1)))
 
    ; comments
    ((:: #\# (complement (:: any-string #\newline any-string)))
-    (return-without-pos (lex-python input-port)))
+    (return-without-pos (basic-lex-python input-port)))
 
    ; symbols
    ((:: (:or alphabetic #\_) (:* (:or alphabetic numeric #\_)))
@@ -157,19 +168,76 @@
 
    ; strings
    ((:: "\"\"\"" (complement (:: any-string "\"\"\"" any-string)) "\"\"\"")
-    (token-string (substring lexeme 3 (- (string-length lexeme) 3))))
+    (get-token-string lexeme 3))
    ((:: "\'\'\'" (complement (:: any-string "\'\'\'" any-string)) "\'\'\'")
-    (token-string (substring lexeme 3 (- (string-length lexeme) 3))))
+    (get-token-string lexeme 3))
    ((:: #\" (complement (:: any-string (:~ #\\) #\" any-string)) #\")
-    (escape-token-string (substring lexeme 1 (- (string-length lexeme) 1))))
+    (get-token-string  lexeme 1))
    ((:: #\' (complement (:: any-string (:~ #\\) #\' any-string)) #\')
-    (escape-token-string (substring lexeme 1 (- (string-length lexeme) 1))))))
+    (get-token-string  lexeme 1))))
+
+(define (lexer->stream lexer p)
+  (define t (lexer p))
+  (stream-cons t (lexer->stream lexer p)))
+
+(define (leading-spaces? t)
+  (and (position-token? t)
+       (equal? (token-name (position-token-token t)) 'leading-spaces)))
+
+(define (leading-spaces-amount t)
+  (token-value (position-token-token t)))
+
+(define (from-position-token pos new-token)
+  (position-token new-token
+                  (position-token-start-pos pos)
+                  (position-token-end-pos pos)))
+
+(define (stream-remove-empty-newlines s)
+  (for/stream ((a s)
+               (b (stream-rest s))
+               #:unless (and (leading-spaces? a) (leading-spaces? b)))
+              a))
+
+(define (unindent indentations to pos)
+  (let loop ((indentations indentations) (result empty-stream))
+    (cond
+      ((= to (car indentations))
+       (values indentations result))
+      ((< to (car indentations))
+       (loop (cdr indentations)
+             (stream-cons (from-position-token pos (token-unindent))
+                          result)))
+      (else (error "Unindent does not match previous indentation level.")))))
+
+(define (stream-indent s)
+  (let loop ((s s) (indentations '(0)))
+    (define t (stream-first s))
+    (cond
+      ((leading-spaces? t)
+       (define amount (leading-spaces-amount t))
+       (cond
+         ((> amount (car indentations))
+          (stream-cons (from-position-token t (token-indent))
+                       (loop (stream-rest s)
+                             (cons amount indentations))))
+         ((= amount (car indentations))
+          (stream-cons (from-position-token t (token-newline))
+                       (loop (stream-rest s) indentations)))
+         (else
+          (define-values (is tokens) (unindent indentations amount t))
+          (stream-append tokens (loop (stream-rest s) is)))))
+      ((eq? (token-name (position-token-token t)) 'eof)
+       (define-values (_ tokens) (unindent indentations 0 t))
+       (stream-append tokens (stream t)))
+      (else (stream-cons t (loop (stream-rest s) indentations))))))
+
+(define (lex-python p)
+  (stream-indent
+   (stream-remove-empty-newlines
+    (lexer->stream basic-lex-python p))))
 
 (define (port->python-tokens (p (current-input-port)))
-  (define token (lex-python p))
-  (if (eq? (position-token-token token) (token-eof))
-      (list token)
-      (cons token (port->python-tokens p))))
+  (sequence->list (lex-python p)))
 
 (define (string->python-tokens s)
   (with-input-from-string s port->python-tokens))
@@ -205,25 +273,46 @@
   (check-lex? "'hello'" (token-string "hello"))
   (check-lex? "'hello\"world' 'hi'"
               (token-string "hello\"world")
-              (token-string "hi") )
+              (token-string "hi"))
   (check-lex? "\"\\\"hello\\\"\"" (token-string "\"hello\""))
   (check-lex? "'\\'hello\\''" (token-string "'hello'"))
 
   ; sequences
   (check-lex? "1\n2"
               (token-number 1)
-              (token-leading-spaces 0)
+              (token-newline)
               (token-number 2))
   (check-lex? "1\n 2"
               (token-number 1)
-              (token-leading-spaces 1)
-              (token-number 2))
+              (token-indent)
+              (token-number 2)
+              (token-unindent))
   (check-lex? "1\n     2"
               (token-number 1)
-              (token-leading-spaces 5)
+              (token-indent)
+              (token-number 2)
+              (token-unindent))
+  (check-lex? "1\n\n2"
+              (token-number 1)
+              (token-newline)
+              (token-number 2))
+  (check-lex? "1\n\n2\n"
+              (token-number 1)
+              (token-newline)
+              (token-number 2)
+              (token-newline))
+  (check-lex? "1\n#\n2"
+              (token-number 1)
+              (token-newline)
               (token-number 2))
   (check-lex? "1#hello\n#hello world\n2"
               (token-number 1)
-              (token-leading-spaces 0)
-              (token-leading-spaces 0)
-              (token-number 2)))
+              (token-newline)
+              (token-number 2))
+  (check-lex? "one:\n two\nthree"
+              (token-symbol 'one)
+              (token-:)
+              (token-indent)
+              (token-symbol 'two)
+              (token-unindent)
+              (token-symbol 'three)))
