@@ -6,11 +6,6 @@
          (prefix-in : parser-tools/lex-sre)
          racket/generator)
 
-(define-syntax-rule (info xs ...) (begin (printf "~s: ~s\n" 'xs xs) ... (newline)))
-(define-syntax-rule (pr x) (begin (define it x) (write it) (newline) it))
-(define (sequence-take->list s i)
-  (for/list ((_ (in-range i)) (x s)) x))
-
 (define-tokens python-tokens
   (leading-spaces number symbol string))
 
