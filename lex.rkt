@@ -1,6 +1,11 @@
 #lang racket
 
-(provide python-tokens python-operators python-keywords python-aux-tokens lex-python)
+(provide python-tokens
+         python-operators
+         python-keywords
+         python-aux-tokens
+         lex-python
+         string->python-tokens)
 
 (require parser-tools/lex
          (prefix-in : parser-tools/lex-sre)
@@ -204,27 +209,55 @@
                           result)))
       (else (error "Unindent does not match previous indentation level.")))))
 
+(define (match-bracket bracket brackets)
+  (case bracket
+    ((close-parenthesis)
+     (or (eq? (car brackets) 'open-parenthesis)
+         (error "mismatched brackets")))
+    ((close-bracket)
+     (or (eq? (car brackets) 'open-bracket)
+         (error "mismatched brackets")))
+    ((close-curly)
+     (or (eq? (car brackets) 'open-curly)
+         (error "mismatched brackets")))
+    (else #f)))
+
 (define (stream-indent s)
-  (let loop ((s s) (indentations '(0)))
-    (define t (stream-first s))
-    (cond
-      ((leading-spaces? t)
-       (define amount (leading-spaces-amount t))
-       (cond
-         ((> amount (car indentations))
-          (stream-cons (from-position-token t (token-indent))
-                       (loop (stream-rest s)
-                             (cons amount indentations))))
-         ((= amount (car indentations))
-          (stream-cons (from-position-token t (token-newline))
-                       (loop (stream-rest s) indentations)))
-         (else
-          (define-values (is tokens) (unindent indentations amount t))
-          (stream-append tokens (loop (stream-rest s) is)))))
-      ((eq? (token-name (position-token-token t)) 'eof)
-       (define-values (_ tokens) (unindent indentations 0 t))
-       (stream-append tokens (stream t)))
-      (else (stream-cons t (loop (stream-rest s) indentations))))))
+  (stream-indent-help s '(0) '()))
+
+(define (stream-indent-help s indentations brackets)
+  (define t (stream-first s))
+  (define name (token-name (position-token-token t)))
+  (cond
+    ((memq name '(open-parenthesis open-bracket open-curly))
+     (define r (stream-indent-help (stream-rest s) indentations (cons name brackets)))
+     (stream-cons t r))
+    ((match-bracket (token-name (position-token-token t)) brackets)
+     (define r (stream-indent-help (stream-rest s) indentations (cdr brackets)))
+     (stream-cons t r))
+    ((leading-spaces? t)
+     (stream-indent-leading-spaces t (stream-rest s) indentations brackets))
+    ((eq? (token-name (position-token-token t)) 'eof)
+     (define-values (_ tokens) (unindent indentations 0 t))
+     (stream-append tokens (stream (from-position-token t (token-newline)) t)))
+    (else
+     (define r (stream-indent-help (stream-rest s) indentations brackets))
+     (stream-cons t r))))
+
+(define (stream-indent-leading-spaces token rest indentations brackets)
+  (define amount (leading-spaces-amount token))
+  (cond
+    ((> amount (car indentations))
+     (stream-cons (from-position-token token (token-indent))
+                  (stream-indent-help rest (cons amount indentations) brackets)))
+    ((= amount (car indentations))
+     (stream-cons (from-position-token token (token-newline))
+                  (stream-indent-help rest indentations brackets)))
+    (else
+     (define-values (is tokens) (unindent indentations amount token))
+     (stream-append tokens
+                    (stream (from-position-token token (token-newline)))
+                    (stream-indent-help rest is brackets)))))
 
 (define (lex-python p)
   (stream-indent
@@ -310,4 +343,5 @@
               (token-indent)
               (token-symbol 'two)
               (token-unindent)
+              (token-newline)
               (token-symbol 'three)))
