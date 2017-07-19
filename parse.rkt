@@ -55,6 +55,7 @@
      ((<assignment>) $1)
      ((<conditional>) $1)
      ((<while>) $1)
+     ((<for>) $1)
      ((<print>) $1)
      ((<return>) $1)
      ((<import>) $1))
@@ -66,10 +67,20 @@
      ((<statement> newline <block-rec>) (cons $1 $3)))
 
     (<assignment>
-     ((symbol = <expression>)
-      `(assign ,$1 ,$3))
+     ((symbol <assignment-operator> <expression>)
+      (list $2 $1 $3))
      ((<expression> open-bracket <expression> close-bracket = <expression>)
-      `(field-assign ,$1 ,$3 ,$6)))
+      `(field-assign ,$1 ,$3 ,$6))
+     ((<comma-separated-symbols> = <expression>)
+      `(unpack ,$1 ,$3)))
+    (<assignment-operator>
+     ((=) '=)
+     ((+=) '+=)
+     ((*=) '*=))
+
+    (<comma-separated-symbols>
+     ((symbol) (list $1))
+     ((symbol comma <comma-separated-symbols>) (cons $1 $3)))
 
     (<function>
      ((def symbol open-parenthesis <arg-list> close-parenthesis : <block>)
@@ -80,7 +91,9 @@
      ((from symbol import symbol) `(import ($2 $4))))
 
     (<return>
-     ((return <expression>) `(return ,$2)))
+     ((return <expression>) `(return ,$2))
+     ((return <expression> comma <comma-separated-values>)
+      `(return (tuple ,$2 . ,$4))))
 
     (<print>
      ((print <expression>) `(print ,$2)))
@@ -101,6 +114,10 @@
     (<while>
      ((while <expression> : <block>)
       `(while ,$2 ,$4)))
+
+    (<for>
+     ((for symbol in <expression> : <block>)
+      `(for ,$2 ,$4 ,$6)))
 
     (<arg-list>
      ((<arg-list-rec>) $1))
@@ -247,9 +264,15 @@
 
   (test-case "assignment"
     (check-equal? (parse-python-string "a=0")
-                  '(program (assign a 0)))
+                  '(program (= a 0)))
     (check-equal? (parse-python-string "a=b+c")
-                  '(program (assign a (+ b c)))))
+                  '(program (= a (+ b c))))
+    (check-equal? (parse-python-string "a*=b+c")
+                  '(program (*= a (+ b c))))
+    (check-equal? (parse-python-string "a+=b+c")
+                  '(program (+= a (+ b c))))
+    (check-equal? (parse-python-string "a, b = c")
+                  '(program (unpack (a b) c))))
 
   (test-case "functions"
     (check-equal? (parse-python-string "def f():\n  50")
@@ -284,7 +307,13 @@
                     (def f (a)
                       (block
                        (cond ((not foo) (block (print "what"))))
-                       (return (index a 0)))))))
+                       (return (index a 0))))))
+    (check-equal? (parse-python-string "def f():\n return 1, 2")
+                  '(program
+                    (def f () (block (return (tuple 1 2))))))
+    (check-equal? (parse-python-string "def f():\n return 1, 2, 3, 4")
+                  '(program
+                    (def f () (block (return (tuple 1 2 3 4)))))))
 
 
   (test-case "dicts"
@@ -305,4 +334,13 @@
 
   (test-case "conditionals"
     (check-equal? (parse-python-string "if x:\n x")
-                  '(program (cond (x (block x)))))))
+                  '(program (cond (x (block x))))))
+
+  (test-case "while"
+    (check-equal? (parse-python-string "while x:\n print x")
+                  '(program (while x (block (print x))))))
+
+  (test-case "for"
+    (check-equal? (parse-python-string "for x in y:\n print x")
+                  '(program (for x y (block (print x)))))))
+
