@@ -1,15 +1,23 @@
 #lang racket
 
-(require parser-tools/yacc "lex.rkt")
+(require parser-tools/yacc "lex.rkt" racket/generator)
+
+(define-syntax-rule (info x ...)
+  (begin (printf "~s: ~s\n" 'x x) ... (newline)))
 
 (define parse-python
   (parser
-   (start <statement>)
+   (start <program>)
    (end eof)
-   (error void)
+   (error (lambda (tok-ok? tok-name tok-value start end)
+            (error (string-append
+                    (format "tok-name: ~s\n" tok-name)
+                    (format "tok-value: ~s\n" tok-value)
+                    (format "tok-ok?: ~s\n" tok-ok?)
+                    (format "start: ~s\n" start)
+                    (format "end: ~s\n" end)))))
    (tokens python-tokens python-operators python-keywords python-aux-tokens)
    (src-pos)
-   (yacc-output "parse-python.yacc")
    (precs
     (left comma)
     (left or)
@@ -32,113 +40,269 @@
     (left open-parenthesis))
    (grammar
 
+    (<program>
+     (() '(program))
+     ((<program-rec>) `(program . ,$1)))
+    (<program-rec>
+     (() '())
+     ((<statement>) (list $1))
+     ((newline <program-rec>) $2)
+     ((<statement> newline <program-rec>) (cons $1 $3)))
+
     (<statement>
      ((<expression>) $1)
+     ((<function>) $1)
+     ((<assignment>) $1)
+     ((<conditional>) $1)
+     ((<while>) $1)
+     ((<print>) $1)
+     ((<return>) $1)
+     ((<import>) $1))
+
+    (<block>
+     ((indent <block-rec> unindent) (cons 'block $2)))
+    (<block-rec>
+     ((<statement>) (list $1))
+     ((<statement> newline <block-rec>) (cons $1 $3)))
+
+    (<assignment>
      ((symbol = <expression>)
-      `(assign ,$1 ,$3)))
+      `(assign ,$1 ,$3))
+     ((<expression> open-bracket <expression> close-bracket = <expression>)
+      `(field-assign ,$1 ,$3 ,$6)))
+
+    (<function>
+     ((def symbol open-parenthesis <arg-list> close-parenthesis : <block>)
+      `(def ,$2 ,$4 ,$7)))
+
+    (<import>
+     ((import symbol) `(import ,$2))
+     ((from symbol import symbol) `(import ($2 $4))))
+
+    (<return>
+     ((return <expression>) `(return ,$2)))
+
+    (<print>
+     ((print <expression>) `(print ,$2)))
+
+    (<conditional>
+     ((if <expression> : <block>)
+      `(cond (,$2 ,$4)))
+     ((if <expression> : <block> <condrec>)
+      `(cond
+         (,$2 ,$4) . ,$5)))
+    (<condrec>
+     (() (list))
+     ((else : <block>)
+      `((else ,$3)))
+     ((elif <expression> : <block> <condrec>)
+      (cons (list $2 $4) $5)))
+
+    (<while>
+     ((while <expression> : <block>)
+      `(while ,$2 ,$4)))
+
+    (<arg-list>
+     ((<arg-list-rec>) $1))
+    (<arg-list-rec>
+     (() (list))
+     ((symbol) (list $1))
+     ((* symbol) (list (list 'args $2)))
+     ((** symbol) (list (list 'kwargs $2)))
+     ((* symbol comma ** symbol)
+      (list (list 'args $2) (list 'kwargs $5)))
+     ((symbol comma <arg-list-rec>)
+      (cons $1 $3)))
 
     (<comma-separated-values>
-     ((<comma-separated-values-rec>)
-      (cons 'commas $1)))
+     ((<comma-separated-values-rec>) $1))
     (<comma-separated-values-rec>
      ((<expression>) (list $1))
      ((<expression> comma <comma-separated-values-rec>)
       (cons $1 $3)))
 
-    (<block>
-     ((<block-rec>) (cons 'block $1)))
-    (<block-rec>
-     ((<statement>) (list $1))
-     ((<statement> <block-rec>) (cons $1 $2)))
+    (<application>
+     ((<expression> open-parenthesis close-parenthesis)
+      (list 'apply $1))
+     ((<expression> open-parenthesis <comma-separated-values> close-parenthesis)
+      (list* 'apply $1 $3)))
+
+    (<array-slice>
+     ((<expression> open-bracket : close-bracket)
+      `(array-slice ,$1 #f #f))
+     ((<expression> open-bracket <expression> : close-bracket)
+      `(array-slice ,$1 ,$3 #f))
+     ((<expression> open-bracket : <expression> close-bracket)
+      `(array-slice ,$1 #f ,$4))
+     ((<expression> open-bracket <expression> : <expression> close-bracket)
+      `(array-slice ,$1 ,$3 ,$5)))
+
+    (<dict-literal>
+     ((open-curly <dict-rec> close-curly) (cons 'dict $2)))
+    (<dict-rec>
+     (() '())
+     ((<expression> : <expression>) (list $1 $3))
+     ((<expression> : <expression> comma <dict-rec>) (list* $1 $3 $5)))
 
     (<expression>
      ((number) $1)
      ((string) $1)
      ((symbol) $1)
 
-     ((open-parenthesis <expression> close-parenthesis)
-      $2)
+     ((<dict-literal>) $1)
+     ((<application>) $1)
+     ((<array-slice>) $1)
+
+     ((open-parenthesis <expression> close-parenthesis) $2)
+
+     ((open-bracket close-bracket) '(list))
+
+     ((<expression> open-bracket <expression> close-bracket)
+      `(index ,$1 ,$3))
+
+     ((<expression> if <expression> else <expression>)
+      `(if ,$1 ,$3 ,$5))
+
+     ((not <expression>) `(not ,$2))
 
      ((<expression> + <expression>)
-      (list '+ $1 $3))
+      `(+ ,$1 ,$3))
      ((<expression> not-in <expression>)
-      (list 'not-in $1 $3))
+      `(not-in ,$1 ,$3))
      ((<expression> << <expression>)
-      (list '<< $1 $3))
+      `(<< ,$1 ,$3))
      ((<expression> dot <expression>)
-      (list 'dot $1 $3))
+      `(dot ,$1 ,$3))
      ((<expression> and <expression>)
-      (list 'and $1 $3))
+      `(and ,$1 ,$3))
      ((<expression> != <expression>)
-      (list '!= $1 $3))
+      `(!= ,$1 ,$3))
      ((<expression> // <expression>)
-      (list '// $1 $3))
+      `(// ,$1 ,$3))
      ((<expression> > <expression>)
-      (list '> $1 $3))
+      `(> ,$1 ,$3))
      ((<expression> / <expression>)
-      (list '/ $1 $3))
+      `(/ ,$1 ,$3))
      ((<expression> ~ <expression>)
-      (list '~ $1 $3))
+      `(~ ,$1 ,$3))
      ((<expression> + <expression>)
-      (list '+ $1 $3))
+      `(+ ,$1 ,$3))
      ((<expression> is <expression>)
-      (list 'is $1 $3))
+      `(is ,$1 ,$3))
      ((<expression> >= <expression>)
-      (list '>= $1 $3))
+      `(>= ,$1 ,$3))
      ((<expression> >> <expression>)
-      (list '>> $1 $3))
+      `(>> ,$1 ,$3))
      ((<expression> or <expression>)
-      (list 'or $1 $3))
+      `(or ,$1 ,$3))
      ((<expression> * <expression>)
-      (list '* $1 $3))
+      `(* ,$1 ,$3))
      ((<expression> & <expression>)
-      (list '& $1 $3))
+      `(& ,$1 ,$3))
      ((<expression> and-not <expression>)
-      (list 'and-not $1 $3))
+      `(and-not ,$1 ,$3))
      ((<expression> == <expression>)
-      (list '== $1 $3))
+      `(== ,$1 ,$3))
      ((<expression> ** <expression>)
-      (list '** $1 $3))
+      `(** ,$1 ,$3))
      ((<expression> ^ <expression>)
-      (list '^ $1 $3))
+      `(^ ,$1 ,$3))
      ((<expression> < <expression>)
-      (list '< $1 $3))
+      `(< ,$1 ,$3))
      ((<expression> - <expression>)
-      (list '- $1 $3))
+      `(- ,$1 ,$3))
      ((<expression> vertical-bar <expression>)
-      (list 'vertical-bar $1 $3))
+      `(vertical-bar ,$1 ,$3))
      ((<expression> % <expression>)
-      (list '% $1 $3))
+      `(% ,$1 ,$3))
      ((<expression> <= <expression>)
-      (list '<= $1 $3))
+      `(<= ,$1 ,$3))
      ((<expression> in <expression>)
-      (list 'in $1 $3))
-     ((<expression> not <expression>)
-      (list 'not $1 $3))
+      `(in ,$1 ,$3))
      ((<expression> is-not <expression>)
-      (list 'is-not $1 $3))
+      `(is-not ,$1 ,$3))
      ((<expression> /= <expression>)
-      (list '/= $1 $3))))))
+      `(/= ,$1 ,$3))))))
 
 (define (parse-python-string s)
-  (with-input-from-string s
-    (lambda ()
-      (define lex (thunk (lex-python (current-input-port))))
-      (parse-python lex))))
+  (parse-python
+   (sequence->generator (lex-python (open-input-string s)))))
 
 (module+ test
   (require rackunit)
 
-  ; numbers, strings, symbols
-  (check-equal? (parse-python-string "123") 123)
-  (check-equal? (parse-python-string "\"hello\"") "hello")
-  (check-equal? (parse-python-string "a") 'a)
+  (test-case "numbers, strings, symbols"
+    (check-equal? (parse-python-string "123") '(program 123))
+    (check-equal? (parse-python-string "\"hello\"") '(program "hello"))
+    (check-equal? (parse-python-string "a") '(program a))
+    (check-equal? (parse-python-string "___fooob1328713") '(program ___fooob1328713)))
 
-  ; operators
-  (check-equal? (parse-python-string "a + b") '(+ a b))
-  (check-equal? (parse-python-string "a + b + c") '(+ a (+ b c)))
-  (check-equal? (parse-python-string "a * b + c + d") '(+ (* a b) (+ c d)))
+  (test-case "operators"
+    (check-equal? (parse-python-string "a + b")
+                  '(program (+ a b)))
+    (check-equal? (parse-python-string "a + b + c")
+                  '(program (+ a (+ b c))))
+    (check-equal? (parse-python-string "a * b + c + d")
+                  '(program (+ (* a b) (+ c d)))))
 
-  ; assignment
-  (check-equal? (parse-python-string "a=0") '(assign a 0))
-  (check-equal? (parse-python-string "a=b+c") '(assign a (+ b c))))
+  (test-case "assignment"
+    (check-equal? (parse-python-string "a=0")
+                  '(program (assign a 0)))
+    (check-equal? (parse-python-string "a=b+c")
+                  '(program (assign a (+ b c)))))
+
+  (test-case "functions"
+    (check-equal? (parse-python-string "def f():\n  50")
+                  '(program (def f () (block 50))))
+    (check-equal? (parse-python-string "def f():\n a\n b\n c")
+                  '(program (def f () (block a b c))))
+    (check-equal? (parse-python-string "def f(a):\n a")
+                  '(program (def f (a) (block a))))
+    (check-equal? (parse-python-string "def f(a, b, c):\n a\n b\n c")
+                  '(program (def f (a b c) (block a b c))))
+    (check-equal? (parse-python-string "def f():\n def g(a, b):\n  a\n g")
+                  '(program (def f () (block (def g (a b) (block a)) g))))
+    (check-equal? (parse-python-string "def f(*a):\n a")
+                  '(program (def f ((args a)) (block a))))
+    (check-equal? (parse-python-string "def f(a, *b):\n a")
+                  '(program (def f (a (args b)) (block a))))
+    (check-equal? (parse-python-string "def f(a, **b):\n a")
+                  '(program (def f (a (kwargs b)) (block a))))
+    (check-equal? (parse-python-string "def f(a, *b, **c):\n a")
+                  '(program (def f (a (args b) (kwargs c)) (block a))))
+
+    (check-equal? (parse-python-string "def f(a):\n return a[0]")
+                  '(program (def f (a) (block (return (index a 0))))))
+    (check-equal? (parse-python-string "def f(a):\n if 0:\n  1\n 2")
+                  '(program
+                    (def f (a)
+                      (block
+                       (cond (0 (block 1)))
+                       2))))
+    (check-equal? (parse-python-string "def f(a):\n if not foo:\n  print 'what'\n return a[0]")
+                  '(program
+                    (def f (a)
+                      (block
+                       (cond ((not foo) (block (print "what"))))
+                       (return (index a 0)))))))
+
+
+  (test-case "dicts"
+    (check-equal? (parse-python-string "{}")
+                  '(program (dict)))
+    (check-equal? (parse-python-string "{a: 1}")
+                  '(program (dict a 1)))
+    (check-equal? (parse-python-string "{a: 1, b: 2}")
+                  '(program (dict a 1 b 2))))
+
+  (test-case "item assignment"
+    (check-equal? (parse-python-string "foo[x] = x")
+                  '(program (field-assign foo x x))))
+
+  (test-case "print"
+    (check-equal? (parse-python-string "print x")
+                  '(program (print x))))
+
+  (test-case "conditionals"
+    (check-equal? (parse-python-string "if x:\n x")
+                  '(program (cond (x (block x)))))))
