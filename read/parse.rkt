@@ -19,8 +19,6 @@
    (tokens python-tokens python-operators python-keywords python-aux-tokens)
    (src-pos)
    (precs
-    (left open-bracket close-bracket)
-    (left open-parenthesis close-parenthesis)
     (left or)
     (left and)
     (left not)
@@ -33,6 +31,8 @@
     (left * / %)
     (left ~)
     (left **)
+    (left open-bracket close-bracket)
+    (left open-parenthesis close-parenthesis)
     (left dot)
     (left :)
     (left comma))
@@ -138,6 +138,7 @@
 
     (<application>
      ((<expression> open-parenthesis close-parenthesis)
+      (prec open-parenthesis)
       (list 'apply $1))
      ((<expression> open-parenthesis <comma-separated-values> close-parenthesis)
       (list* 'apply $1 $3)))
@@ -348,7 +349,6 @@
     (check-equal? (parse-python-string "for x in y:\n print x")
                   '(program (for x y (block (print x))))))
 
-
   (test-case "precedent"
     (check-equal? (parse-python-string "a.b.c")
                   '(program (dot (dot a b) c)))
@@ -359,4 +359,12 @@
     (check-equal? (parse-python-string "(a + b) < c")
                   '(program (< (+ a b) c)))
     (check-equal? (parse-python-string "a + b < c")
-                  '(program (< (+ a b) c)))))
+                  '(program (< (+ a b) c)))
+    (check-equal? (parse-python-string "f(x) < 3")
+                  '(program (< (apply f x) 3)))
+    (check-equal? (parse-python-string "3 < f(x)")
+                  '(program (< 3 (apply f x))))
+    (check-equal? (parse-python-string "a().b")
+                  '(program (dot (apply a) b)))
+    (check-equal? (parse-python-string "a.b().c")
+                  '(program (dot (apply (dot a b)) c)))))
