@@ -19,25 +19,25 @@
    (tokens python-tokens python-operators python-keywords python-aux-tokens)
    (src-pos)
    (precs
-    (left close-parenthesis)
     (left open-parenthesis)
-    (left close-bracket)
+    (left close-parenthesis)
     (left open-bracket)
-    (left comma)
-    (left or)
-    (left and)
-    (left not)
-    (left in not-in is is-not < <= > >= != ==)
-    (left vertical-bar)
-    (left ^)
-    (left &)
+    (left close-bracket)
+    (left :)
+    (left dot)
+    (left **)
+    (left ~)
     (left << >>)
     (left + -)
     (left * / %)
-    (left ~)
-    (left **)
-    (left dot)
-    (left :))
+    (left &)
+    (left ^)
+    (left in not-in is is-not < <= > >= != ==)
+    (left vertical-bar)
+    (left not)
+    (left and)
+    (left or)
+    (left comma))
    (grammar
 
     (<program>
@@ -182,8 +182,6 @@
 
      ((not <expression>) `(not ,$2))
 
-     ((<expression> + <expression>)
-      `(+ ,$1 ,$3))
      ((<expression> not-in <expression>)
       `(not-in ,$1 ,$3))
      ((<expression> << <expression>)
@@ -258,9 +256,9 @@
     (check-equal? (parse-python-string "a + b")
                   '(program (+ a b)))
     (check-equal? (parse-python-string "a + b + c")
-                  '(program (+ a (+ b c))))
-    (check-equal? (parse-python-string "a * b + c + d")
-                  '(program (+ (* a b) (+ c d)))))
+                  '(program (+ (+ a b) c)))
+    (check-equal? (parse-python-string "a * b + c * d")
+                  '(program (+ (* a b) (* c d)))))
 
   (test-case "assignment"
     (check-equal? (parse-python-string "a=0")
@@ -350,5 +348,17 @@
 
   (test-case "for"
     (check-equal? (parse-python-string "for x in y:\n print x")
-                  '(program (for x y (block (print x)))))))
+                  '(program (for x y (block (print x))))))
 
+
+  (test-case "precedent"
+    (check-equal? (parse-python-string "a.b.c")
+                  '(program (dot (dot a b) c)))
+    (check-equal? (parse-python-string "a.b(c)")
+                  '(program (apply (dot a b) c)))
+    (check-equal? (parse-python-string "a + (b < c)")
+                  '(program (+ a (< b c))))
+    (check-equal? (parse-python-string "(a + b) < c")
+                  '(program (< (+ a b) c)))
+    (check-equal? (parse-python-string "a + b < c")
+                  '(program (< (+ a b) c)))))
