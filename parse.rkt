@@ -19,6 +19,10 @@
    (tokens python-tokens python-operators python-keywords python-aux-tokens)
    (src-pos)
    (precs
+    (left close-parenthesis)
+    (left open-parenthesis)
+    (left close-bracket)
+    (left open-bracket)
     (left comma)
     (left or)
     (left and)
@@ -33,11 +37,7 @@
     (left ~)
     (left **)
     (left dot)
-    (left :)
-    (left close-bracket)
-    (left open-bracket)
-    (left close-parenthesis)
-    (left open-parenthesis))
+    (left :))
    (grammar
 
     (<program>
@@ -339,6 +339,14 @@
   (test-case "while"
     (check-equal? (parse-python-string "while x:\n print x")
                   '(program (while x (block (print x))))))
+
+  (test-case "object fields"
+    (check-equal? (parse-python-string "a.b")
+                  '(program (dot a b)))
+    (check-equal? (parse-python-string "a.b(x)")
+                  '(program (apply (dot a b) x)))
+    (check-equal? (parse-python-string "a.b(x, y)")
+                  '(program (apply (dot a b) x y))))
 
   (test-case "for"
     (check-equal? (parse-python-string "for x in y:\n print x")
